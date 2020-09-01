@@ -66,12 +66,12 @@ ProcedureResult Proc_PagerankInvoke(ProcedureCtx *ctx, const SIValue *args) {
 	if(!s) return PROCEDURE_OK;
 	r = Graph_GetRelationMatrix(g, s->id);
 
-	GrB_Index rows = Graph_RequiredMatrixDim(g);
+	GrB_Index rows = Graph_RequiredMatrixDim(g);//number of nodes within graph
 	GrB_Index cols = rows;
-	assert(GrB_Matrix_nvals(&n, l) == GrB_SUCCESS);
+	assert(GrB_Matrix_nvals(&n, l) == GrB_SUCCESS);//number of labeled nodes
 	assert(GrB_Matrix_new(&reduced, GrB_BOOL, n, n) == GrB_SUCCESS);
 
-	if(n != rows) {
+	if(n != rows) {//need reduced matrix 
 		mappings = rm_malloc(sizeof(GrB_Index) * n);
 		assert(GrB_Matrix_extractTuples_BOOL(mappings, GrB_NULL, GrB_NULL, &n, l) == GrB_SUCCESS);
 		assert(GrB_extract(reduced, GrB_NULL, GrB_NULL, r, mappings, n, mappings, n,

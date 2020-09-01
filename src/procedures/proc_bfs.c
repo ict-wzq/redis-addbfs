@@ -8,26 +8,28 @@
 #include "proc_ctx.h"
 #include "../query_ctx.h"
 #include "../datatypes/array.h"
+#include "../graph/entities/node.h"
+#include "../graph/graphcontext.h"
 #include "../algorithms/bfs6.h"
 
-// CALL algo.Bfs(startNode, endNode, weightProperty, relationshipQuery, defaultValue)
+// CALL algo.Bfs(startNode, label, relationship)
 
 typedef struct {
-	int n;                          // Number of nodes to rank.
-	int i;                          // Current node to return.
+	int n;                          // Number of nodes to do Bfs.
 	Graph *g;                       // Graph.
-	Node node;                      // Node.
+	Node *startNode;                // Start Node to do Bfs.
 	GrB_Index *mappings;            // Mappings between extracted matrix rows and node ids.
-	LAGraph_PageRank *rankings;     // Nodes rankings.
-	SIValue *output;                // Array with 4 entries ["node", node, "score", score].
+	GrB_Matrix M;					// relation Matrix whose nodes are labeled 
+	SIValue *output;                // Array with 4 entries ["node", node, "level", level].
 } BfsContext;
 
 ProcedureResult Proc_BfsInvoke(ProcedureCtx *ctx, const SIValue *args) {
-	if(array_len((SIValue *)args) != 2) return PROCEDURE_ERR;
-	if(!(SI_TYPE(args[0]) & SI_TYPE(args[1]) & T_STRING)) return PROCEDURE_ERR;
+	if(array_len((SIValue *)args) != 3) return PROCEDURE_ERR;
+	if(!(SI_TYPE(args[1]) & SI_TYPE(args[2]) & T_STRING)) return PROCEDURE_ERR;
 
-	const char *label = args[0].stringval;
-	const char *relation = args[1].stringval;
+	Node *startNode = (Node *)(args[0].ptrval);	
+	const char *label = args[1].stringval;
+	const char *relation = args[2].stringval;
 
 	GrB_Index n = 0;
 	Schema *s = NULL;
@@ -36,22 +38,11 @@ ProcedureResult Proc_BfsInvoke(ProcedureCtx *ctx, const SIValue *args) {
 	GrB_Index *mappings = NULL; // Mappings, array for returning row indices of tuples.
 	GrB_Matrix reduced = GrB_NULL;
 	Graph *g = QueryCtx_GetGraph();
-	LAGraph_PageRank *rankings = NULL;
 	GraphContext *gc = QueryCtx_GetGraphCtx();
 
 	// Setup context.
-	PagerankContext *pdata = rm_malloc(sizeof(PagerankContext));
-	pdata->n = n;
-	pdata->i = 0;
+	BfsContext *pdata = rm_malloc(sizeof(BfsContext));
 	pdata->g = g;
-	pdata->mappings = mappings;
-	pdata->rankings = rankings;
-	pdata->output = array_new(SIValue, 4);
-	pdata->output = array_append(pdata->output, SI_ConstStringVal("node"));
-	pdata->output = array_append(pdata->output, SI_Node(NULL)); // Place holder.
-	pdata->output = array_append(pdata->output, SI_ConstStringVal("score"));
-	pdata->output = array_append(pdata->output, SI_DoubleVal(0.0)); // Place holder.
-	ctx->privateData = pdata;
 
 	// Get label matrix.
 	s = GraphContext_GetSchema(gc, label, SCHEMA_NODE);
@@ -63,11 +54,12 @@ ProcedureResult Proc_BfsInvoke(ProcedureCtx *ctx, const SIValue *args) {
 	if(!s) return PROCEDURE_OK;
 	r = Graph_GetRelationMatrix(g, s->id);
 
+	//Get matrix for bfs
 	GrB_Index rows = Graph_RequiredMatrixDim(g);
 	GrB_Index cols = rows;
 	assert(GrB_Matrix_nvals(&n, l) == GrB_SUCCESS);
 	assert(GrB_Matrix_new(&reduced, GrB_BOOL, n, n) == GrB_SUCCESS);
-
+	
 	if(n != rows) {
 		mappings = rm_malloc(sizeof(GrB_Index) * n);
 		assert(GrB_Matrix_extractTuples_BOOL(mappings, GrB_NULL, GrB_NULL, &n, l) == GrB_SUCCESS);
@@ -85,35 +77,56 @@ ProcedureResult Proc_BfsInvoke(ProcedureCtx *ctx, const SIValue *args) {
 		GrB_free(&desc);
 	}
 
-
-	double tol = 1e-4;
-	int iters, itermax = 100;
-	assert(Pagerank(&rankings, reduced, itermax, tol, &iters) == GrB_SUCCESS);
-
-	// Clean up.
-	GrB_free(&reduced);
-
 	// Update context.
 	pdata->n = n;
+	pdata->M = reduced;
 	pdata->mappings = mappings;
-	pdata->rankings = rankings;
+
+	pdata->output = array_new(SIValue, 4);
+	pdata->output = array_append(pdata->output, SI_ConstStringVal("node_id"));
+	pdata->output = array_append(pdata->output, SI_NullVal()); // Place holder.
+	pdata->output = array_append(pdata->output, SI_ConstStringVal("level"));
+	pdata->output = array_append(pdata->output, SI_NullVal()); // Place holder.
+
+	ctx->privateData = pdata;
 	return PROCEDURE_OK;
 }
 
 SIValue *Proc_BfsStep(ProcedureCtx *ctx) {
 	assert(ctx->privateData);
 
-	PagerankContext *pdata = (PagerankContext *)ctx->privateData;
+	BfsContext *pdata = (BfsContext *)ctx->privateData;
+	int32_t v = 0;
+	GrB_Index n = pdata->n;
+	SIValue node = SIArray_New(n);
+	SIValue level = SIArray_New(n);
+	Node *s = pdata->startNode;
+	NodeID s_id = ENTITY_GET_ID(s);
+	GrB_Vector output = GrB_NULL;    // Pointer to the vector of level
 
-	// Depleted?
-	if(pdata->i >= pdata->n) return NULL;
+	GrB_Info info = bfs6(&output, pdata->M, s_id);
 
-	LAGraph_PageRank rank = pdata->rankings[pdata->i++];
-	NodeID node_id = (pdata->mappings) ? pdata->mappings[rank.page] : rank.page;
+	if(info != GrB_SUCCESS) {
+		//Failed to run bfs6 , return NULL.
+		return NULL;
+	}
 
-	Graph_GetNode(pdata->g, node_id, &pdata->node);
-	pdata->output[1] = SI_Node(&pdata->node);
-	pdata->output[3] = SI_DoubleVal(rank.pagerank);
+	//set result
+	for (GrB_Index i = 0; i < n; i++) {
+		NodeID node_id = (pdata->mappings) ? pdata->mappings[i] : i;
+		SIArray_Append(&node, SI_LongVal(node_id));
+
+		info = GrB_Vector_extractElement_INT32(&v, output, i);
+		if(info != GrB_SUCCESS) {
+			//Failed to extract element from output , return NULL.
+			return NULL;
+		}
+		SIArray_Append(&level, SI_LongVal(c));
+	}
+
+	//Graph_GetNode(pdata->g, node_id, &pdata->node);
+	pdata->output[1] = node;
+	pdata->output[3] = level;
 
 	return pdata->output;
 }
@@ -121,32 +134,33 @@ SIValue *Proc_BfsStep(ProcedureCtx *ctx) {
 ProcedureResult Proc_BfsFree(ProcedureCtx *ctx) {
 	// Clean up.
 	if(ctx->privateData) {
-		PagerankContext *pdata = ctx->privateData;
-		if(pdata->output) array_free(pdata->output);
-		if(pdata->mappings) rm_free(pdata->mappings);
-		if(pdata->rankings) rm_free(pdata->rankings);
+		BfsContext *pdata = ctx->privateData;
+		GrB_free(&pdata->M);
+		array_free(pdata->output);
+		rm_free(pdata->mappings);
 		rm_free(ctx->privateData);
 	}
 
 	return PROCEDURE_OK;
 }
 
-
-
 ProcedureCtx *Proc_PagerankCtx() {
 	void *privateData = NULL;
+
 	ProcedureOutput **outputs = array_new(ProcedureOutput *, 2);
 	ProcedureOutput *output_node = rm_malloc(sizeof(ProcedureOutput));
-	ProcedureOutput *output_score = rm_malloc(sizeof(ProcedureOutput));
-	output_node->name = "node";
-	output_node->type = T_NODE;
-	output_score->name = "score";
-	output_score->type = T_DOUBLE;
+	ProcedureOutput *output_level = rm_malloc(sizeof(ProcedureOutput));
+
+	output_node->name = "node_id";
+	output_node->type = T_ARRAY;
+
+	output_level->name = "level";
+	output_level->type = T_ARRAY;
 
 	outputs = array_append(outputs, output_node);
-	outputs = array_append(outputs, output_score);
+	outputs = array_append(outputs, output_level);
 	ProcedureCtx *ctx = ProcCtxNew("algo.Bfs",
-								   2,
+								   3,
 								   outputs,
 								   Proc_BfsStep,
 								   Proc_BfsInvoke,
