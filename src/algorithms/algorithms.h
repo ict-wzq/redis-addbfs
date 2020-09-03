@@ -8,6 +8,7 @@
 #define _ALGORITHMS_H_
 
 #include "./bfs.h"
+#include "./bfs6.h"
 #include "./dfs.h"
 #include "./all_paths.h"
 #include "./detect_cycle.h"

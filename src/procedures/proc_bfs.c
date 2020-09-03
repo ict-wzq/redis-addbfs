@@ -43,15 +43,25 @@ ProcedureResult Proc_BfsInvoke(ProcedureCtx *ctx, const SIValue *args) {
 	// Setup context.
 	BfsContext *pdata = rm_malloc(sizeof(BfsContext));
 	pdata->g = g;
+	pdata->n = n;
+	pdata->M = reduced;
+	pdata->mappings = mappings;
+	pdata->startNode = startNode;
+	pdata->output = array_new(SIValue, 4);
+	pdata->output = array_append(pdata->output, SI_ConstStringVal("node_id"));
+	pdata->output = array_append(pdata->output, SI_NullVal()); // Place holder.
+	pdata->output = array_append(pdata->output, SI_ConstStringVal("level"));
+	pdata->output = array_append(pdata->output, SI_NullVal()); // Place holder.
+	ctx->privateData = pdata;
 
 	// Get label matrix.
 	s = GraphContext_GetSchema(gc, label, SCHEMA_NODE);
-	if(!s) return PROCEDURE_OK;
+	if(!s) return PROCEDURE_ERR;
 	l = Graph_GetLabelMatrix(g, s->id);
 
 	// Get relation matrix.
 	s = GraphContext_GetSchema(gc, relation, SCHEMA_EDGE);
-	if(!s) return PROCEDURE_OK;
+	if(!s) return PROCEDURE_ERR;
 	r = Graph_GetRelationMatrix(g, s->id);
 
 	//Get matrix for bfs
@@ -82,31 +92,27 @@ ProcedureResult Proc_BfsInvoke(ProcedureCtx *ctx, const SIValue *args) {
 	pdata->M = reduced;
 	pdata->mappings = mappings;
 
-	pdata->output = array_new(SIValue, 4);
-	pdata->output = array_append(pdata->output, SI_ConstStringVal("node_id"));
-	pdata->output = array_append(pdata->output, SI_NullVal()); // Place holder.
-	pdata->output = array_append(pdata->output, SI_ConstStringVal("level"));
-	pdata->output = array_append(pdata->output, SI_NullVal()); // Place holder.
-
-	ctx->privateData = pdata;
+	printf("end of invoke!\n");
 	return PROCEDURE_OK;
 }
 
 SIValue *Proc_BfsStep(ProcedureCtx *ctx) {
 	assert(ctx->privateData);
-
+	printf("start of step!\n");
 	BfsContext *pdata = (BfsContext *)ctx->privateData;
 	int32_t v = 0;
-	GrB_Index n = pdata->n;
+	int n = pdata->n;
 	SIValue node = SIArray_New(n);
 	SIValue level = SIArray_New(n);
 	Node *s = pdata->startNode;
 	NodeID s_id = ENTITY_GET_ID(s);
+	printf("nodeid=%ld\n",s_id);
 	GrB_Vector output = GrB_NULL;    // Pointer to the vector of level
 
 	GrB_Info info = bfs6(&output, pdata->M, s_id);
 
 	if(info != GrB_SUCCESS) {
+		printf("failed to do bfs6!\n");
 		//Failed to run bfs6 , return NULL.
 		return NULL;
 	}
@@ -121,7 +127,7 @@ SIValue *Proc_BfsStep(ProcedureCtx *ctx) {
 			//Failed to extract element from output , return NULL.
 			return NULL;
 		}
-		SIArray_Append(&level, SI_LongVal(c));
+		SIArray_Append(&level, SI_LongVal(v));
 	}
 
 	//Graph_GetNode(pdata->g, node_id, &pdata->node);
@@ -144,7 +150,7 @@ ProcedureResult Proc_BfsFree(ProcedureCtx *ctx) {
 	return PROCEDURE_OK;
 }
 
-ProcedureCtx *Proc_PagerankCtx() {
+ProcedureCtx *Proc_BfsCtx() {
 	void *privateData = NULL;
 
 	ProcedureOutput **outputs = array_new(ProcedureOutput *, 2);
