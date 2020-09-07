@@ -25,28 +25,25 @@ typedef struct {
 
 ProcedureResult Proc_BfsInvoke(ProcedureCtx *ctx, const SIValue *args) {
 	if(array_len((SIValue *)args) != 3) return PROCEDURE_ERR;
-	if(!(SI_TYPE(args[1]) & SI_TYPE(args[2]) & T_STRING)) return PROCEDURE_ERR;
+	if(SI_TYPE(args[0]) != T_NODE || SI_TYPE(args[1]) != T_STRING || SI_TYPE(args[2]) != T_STRING) 
+		return PROCEDURE_ERR;
 
 	Node *startNode = (Node *)(args[0].ptrval);	
 	const char *label = args[1].stringval;
 	const char *relation = args[2].stringval;
 
+	Graph *g = QueryCtx_GetGraph();
 	GrB_Index n = 0;
-	Schema *s = NULL;
-	GrB_Matrix l = NULL;
-	GrB_Matrix r = NULL;
 	GrB_Index *mappings = NULL; // Mappings, array for returning row indices of tuples.
 	GrB_Matrix reduced = GrB_NULL;
-	Graph *g = QueryCtx_GetGraph();
-	GraphContext *gc = QueryCtx_GetGraphCtx();
 
 	// Setup context.
-	BfsContext *pdata = rm_malloc(sizeof(BfsContext));
-	pdata->g = g;
+	BfsContext *pdata = rm_malloc(1, sizeof(BfsContext));
 	pdata->n = n;
-	pdata->M = reduced;
-	pdata->mappings = mappings;
+	pdata->g = g;
 	pdata->startNode = startNode;
+	pdata->mappings = mappings;
+	pdata->M = reduced;
 	pdata->output = array_new(SIValue, 4);
 	pdata->output = array_append(pdata->output, SI_ConstStringVal("node_id"));
 	pdata->output = array_append(pdata->output, SI_NullVal()); // Place holder.
@@ -55,13 +52,17 @@ ProcedureResult Proc_BfsInvoke(ProcedureCtx *ctx, const SIValue *args) {
 	ctx->privateData = pdata;
 
 	// Get label matrix.
+	Schema *s = NULL;
+	GrB_Matrix l = NULL;
+	GrB_Matrix r = NULL;
+	GraphContext *gc = QueryCtx_GetGraphCtx();
 	s = GraphContext_GetSchema(gc, label, SCHEMA_NODE);
-	if(!s) return PROCEDURE_ERR;
+	if(!s) return PROCEDURE_OK;// Failed to find schema, first step will return NULL.
 	l = Graph_GetLabelMatrix(g, s->id);
 
 	// Get relation matrix.
 	s = GraphContext_GetSchema(gc, relation, SCHEMA_EDGE);
-	if(!s) return PROCEDURE_ERR;
+	if(!s) return PROCEDURE_OK;	
 	r = Graph_GetRelationMatrix(g, s->id);
 
 	//Get matrix for bfs
@@ -69,7 +70,7 @@ ProcedureResult Proc_BfsInvoke(ProcedureCtx *ctx, const SIValue *args) {
 	GrB_Index cols = rows;
 	assert(GrB_Matrix_nvals(&n, l) == GrB_SUCCESS);
 	assert(GrB_Matrix_new(&reduced, GrB_BOOL, n, n) == GrB_SUCCESS);
-	
+	printf("n = %d\n", n);
 	if(n != rows) {
 		mappings = rm_malloc(sizeof(GrB_Index) * n);
 		assert(GrB_Matrix_extractTuples_BOOL(mappings, GrB_NULL, GrB_NULL, &n, l) == GrB_SUCCESS);
@@ -92,46 +93,36 @@ ProcedureResult Proc_BfsInvoke(ProcedureCtx *ctx, const SIValue *args) {
 	pdata->M = reduced;
 	pdata->mappings = mappings;
 
-	printf("end of invoke!\n");
 	return PROCEDURE_OK;
 }
 
 SIValue *Proc_BfsStep(ProcedureCtx *ctx) {
 	assert(ctx->privateData);
-	printf("start of step!\n");
 	BfsContext *pdata = (BfsContext *)ctx->privateData;
 	int32_t v = 0;
 	int n = pdata->n;
-	SIValue node = SIArray_New(n);
-	SIValue level = SIArray_New(n);
+	printf("n = %d\n",n);
+	SIValue nodes = SI_Array(n);
+	SIValue level = SI_Array(n);
 	Node *s = pdata->startNode;
 	NodeID s_id = ENTITY_GET_ID(s);
 	printf("nodeid=%ld\n",s_id);
 	GrB_Vector output = GrB_NULL;    // Pointer to the vector of level
 
-	GrB_Info info = bfs6(&output, pdata->M, s_id);
-
-	if(info != GrB_SUCCESS) {
-		printf("failed to do bfs6!\n");
-		//Failed to run bfs6 , return NULL.
-		return NULL;
-	}
+	assert(bfs6(&output, pdata->M, s_id) == GrB_SUCCESS);
 
 	//set result
 	for (GrB_Index i = 0; i < n; i++) {
 		NodeID node_id = (pdata->mappings) ? pdata->mappings[i] : i;
-		SIArray_Append(&node, SI_LongVal(node_id));
+		SIArray_Append(&nodes, SI_LongVal(node_id));
 
-		info = GrB_Vector_extractElement_INT32(&v, output, i);
-		if(info != GrB_SUCCESS) {
-			//Failed to extract element from output , return NULL.
-			return NULL;
-		}
+		assert(GrB_Vector_extractElement_INT32(&v, output, i) == GrB_SUCCESS);
+		
 		SIArray_Append(&level, SI_LongVal(v));
 	}
 
 	//Graph_GetNode(pdata->g, node_id, &pdata->node);
-	pdata->output[1] = node;
+	pdata->output[1] = nodes;
 	pdata->output[3] = level;
 
 	return pdata->output;
