@@ -21,6 +21,7 @@ typedef struct {
 	GrB_Index *mappings;            // Mappings between extracted matrix rows and node ids.
 	GrB_Matrix M;					// relation Matrix whose nodes are labeled 
 	SIValue *output;                // Array with 4 entries ["node", node, "level", level].
+	bool depleted;					// True if BFS has already been performed for this node.
 } BfsContext;
 
 ProcedureResult Proc_BfsInvoke(ProcedureCtx *ctx, const SIValue *args) {
@@ -38,7 +39,7 @@ ProcedureResult Proc_BfsInvoke(ProcedureCtx *ctx, const SIValue *args) {
 	GrB_Matrix reduced = GrB_NULL;
 
 	// Setup context.
-	BfsContext *pdata = rm_malloc(1, sizeof(BfsContext));
+	BfsContext *pdata = rm_malloc(sizeof(BfsContext) * 1);
 	pdata->n = n;
 	pdata->g = g;
 	pdata->startNode = startNode;
@@ -49,6 +50,7 @@ ProcedureResult Proc_BfsInvoke(ProcedureCtx *ctx, const SIValue *args) {
 	pdata->output = array_append(pdata->output, SI_NullVal()); // Place holder.
 	pdata->output = array_append(pdata->output, SI_ConstStringVal("level"));
 	pdata->output = array_append(pdata->output, SI_NullVal()); // Place holder.
+	pdata->depleted = false;
 	ctx->privateData = pdata;
 
 	// Get label matrix.
@@ -68,29 +70,22 @@ ProcedureResult Proc_BfsInvoke(ProcedureCtx *ctx, const SIValue *args) {
 	//Get matrix for bfs
 	GrB_Index rows = Graph_RequiredMatrixDim(g);
 	GrB_Index cols = rows;
+	printf("rows = %ld\n", rows);
 	assert(GrB_Matrix_nvals(&n, l) == GrB_SUCCESS);
 	assert(GrB_Matrix_new(&reduced, GrB_BOOL, n, n) == GrB_SUCCESS);
-	printf("n = %d\n", n);
+	printf("n = %ld\n", n);
 	if(n != rows) {
 		mappings = rm_malloc(sizeof(GrB_Index) * n);
 		assert(GrB_Matrix_extractTuples_BOOL(mappings, GrB_NULL, GrB_NULL, &n, l) == GrB_SUCCESS);
 		assert(GrB_extract(reduced, GrB_NULL, GrB_NULL, r, mappings, n, mappings, n,
-						   GrB_NULL) == GrB_SUCCESS);
+						   GrB_NULL) == GrB_SUCCESS);//extract submatrix from r
+		pdata->M = reduced;
 	} else {
-		/* There no need to perform extraction as `r` dimension NxN
-		 * is the same as the number of entries in `l` which means
-		 * all connections described in `r` connect nodes of type `l`
-		 * Unfortunately we still need to type cast `r` into a boolean matrix. */
-		GrB_Descriptor desc;
-		GrB_Descriptor_new(&desc);
-		GrB_Descriptor_set(desc, GrB_INP0, GrB_TRAN);
-		assert(GrB_transpose(reduced, GrB_NULL, GrB_NULL, r, desc) == GrB_SUCCESS);
-		GrB_free(&desc);
+		pdata->M = r;
 	}
 
 	// Update context.
 	pdata->n = n;
-	pdata->M = reduced;
 	pdata->mappings = mappings;
 
 	return PROCEDURE_OK;
@@ -99,32 +94,38 @@ ProcedureResult Proc_BfsInvoke(ProcedureCtx *ctx, const SIValue *args) {
 SIValue *Proc_BfsStep(ProcedureCtx *ctx) {
 	assert(ctx->privateData);
 	BfsContext *pdata = (BfsContext *)ctx->privateData;
-	int32_t v = 0;
-	int n = pdata->n;
-	printf("n = %d\n",n);
-	SIValue nodes = SI_Array(n);
-	SIValue level = SI_Array(n);
+	
+	// Return NULL if this source has already been mapped or there are no connected nodes.
+	if(pdata->depleted || pdata->n == 0) return NULL;
+
 	Node *s = pdata->startNode;
 	NodeID s_id = ENTITY_GET_ID(s);
-	printf("nodeid=%ld\n",s_id);
+	printf("s_id=%ld\n",s_id);
 	GrB_Vector output = GrB_NULL;    // Pointer to the vector of level
 
 	assert(bfs6(&output, pdata->M, s_id) == GrB_SUCCESS);
 
+	//Get number of entries in bfs output
+	GrB_Index nvals;
+	GrB_Vector_nvals(&nvals, output);
+	SIValue nodes = SI_Array(nvals);
+	SIValue levels = SI_Array(nvals);
+	printf("nvals of output = %ld\n", nvals);
+
 	//set result
-	for (GrB_Index i = 0; i < n; i++) {
+	GrB_Index *node_ids = rm_malloc(nvals * sizeof(GrB_Index));
+	int32_t *level = rm_malloc(nvals * sizeof(int32_t));
+	assert(GrB_Vector_extractTuples_INT32(node_ids, level, &nvals, output) == GrB_SUCCESS);
+	for (GrB_Index i = 0; i < nvals; i++) {
 		NodeID node_id = (pdata->mappings) ? pdata->mappings[i] : i;
 		SIArray_Append(&nodes, SI_LongVal(node_id));
-
-		assert(GrB_Vector_extractElement_INT32(&v, output, i) == GrB_SUCCESS);
-		
-		SIArray_Append(&level, SI_LongVal(v));
-	}
-
-	//Graph_GetNode(pdata->g, node_id, &pdata->node);
+		SIArray_Append(&levels, SI_LongVal(level[i]));
+		printf("%ld : node = %ld, level = %d\n", i, node_id, level[i]);
+	}	
 	pdata->output[1] = nodes;
-	pdata->output[3] = level;
+	pdata->output[3] = levels;
 
+	pdata->depleted = true; // Mark that this node has been mapped.
 	return pdata->output;
 }
 
@@ -156,7 +157,7 @@ ProcedureCtx *Proc_BfsCtx() {
 
 	outputs = array_append(outputs, output_node);
 	outputs = array_append(outputs, output_level);
-	ProcedureCtx *ctx = ProcCtxNew("algo.Bfs",
+	ProcedureCtx *ctx = ProcCtxNew("algo.BFS",
 								   3,
 								   outputs,
 								   Proc_BfsStep,
