@@ -59,23 +59,25 @@
 #include "LAGraph_BF_full.h"
 #include "../util/rmalloc.h"
 
-#define LAGRAPH_FREE_ALL               \
+#define FREE_ALL               \
 {                                      \
     GrB_free(&d);                      \
-    GrB_free(&dtmp);                   \
+    GrB_free(&dmasked);                \
+    GrB_free(&dless);                  \
     GrB_free(&Atmp);                   \
     GrB_free(&BF_Tuple3);              \
     GrB_free(&BF_lMIN_Tuple3);         \
     GrB_free(&BF_PLUSrhs_Tuple3);      \
-    GrB_free(&BF_EQ_Tuple3);           \
+    GrB_free(&BF_Identity_Tuple3);     \
+    GrB_free(&BF_LT_Tuple3);           \
     GrB_free(&BF_lMIN_Tuple3_Monoid);  \
     GrB_free(&BF_lMIN_PLUSrhs_Tuple3); \
-    LAGRAPH_FREE (I);                  \
-    LAGRAPH_FREE (J);                  \
-    LAGRAPH_FREE (w);                  \
-    LAGRAPH_FREE (W);                  \
-    LAGRAPH_FREE (h);                  \
-    LAGRAPH_FREE (pi);                 \
+    rm_free (I);                       \
+    rm_free (J);                       \
+    rm_free (w);                       \
+    rm_free (W);                       \
+    rm_free (h);                       \
+    rm_free (pi);                      \
 }
 
 //------------------------------------------------------------------------------
@@ -87,9 +89,6 @@
 // true for all entries in C.
 
 // See also LAGraph_isall for matrices.
-
-#define FREE_ALL    \
-    GrB_free (&C) ; \
 
 GrB_Info LAGraph_Vector_isall      // return GrB_SUCCESS if successful
 (
